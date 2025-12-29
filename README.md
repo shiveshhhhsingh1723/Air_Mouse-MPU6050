@@ -143,25 +143,6 @@ int8_t yMove = g.gyro.x * -6;
 
 - Increase multiplier for **faster movement**.
 
----
-
-## ⚠️ Known Limitations
-
-- No click / scroll gestures yet
-- No absolute positioning
-- Drift possible over long use
-- Needs calibration for each user
-
----
-
-## 🔮 Future Improvements
-
-- 🖱️ Left / Right click via gestures
-- 🔄 Scroll control
-- 🎯 Cursor smoothing & filtering
-- 🔋 Battery-powered wearable version
-- 🧠 AI-based gesture recognition
-- 📺 Presentation control mode
 
 ---
 
