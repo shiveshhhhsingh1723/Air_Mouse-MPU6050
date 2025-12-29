@@ -13,29 +13,54 @@ float pitch = 0.0, roll = 0.0;
 unsigned long lastTime = 0;
 unsigned long lastTapTime = 0;
 unsigned long lastTwistTime = 0;
+unsigned long lastDoubleClickTime = 0;
 
-// ========== TUNING PARAMETERS - ADJUST THESE ==========
+// ========== TUNING PARAMETERS ==========
 
 // --- Cursor Movement Settings ---
-const float CURSOR_SPEED = 0.8;          // 0.5 = slower, 1.2 = faster
-const float DEADZONE = 5.0;              // 3.0 = more sensitive, 8.0 = less sensitive
+const float CURSOR_SPEED = 0.8;
+const float DEADZONE = 5.0;
 
 // --- Click Gesture Settings ---
-const float TAP_THRESHOLD = 14.0;        // 10.0 = easier tap, 18.0 = harder tap
-const float TWIST_THRESHOLD = 250.0;     // 180.0 = easier twist, 350.0 = harder twist
+const float TAP_THRESHOLD = 14.0;        // Z-axis for left click
+const float TWIST_THRESHOLD = 250.0;     // Z-rotation for right click
+const float DOUBLE_TAP_WINDOW = 400;     // ms window for double-click
+const float SHAKE_THRESHOLD = 20.0;      // Shake for middle click
 
 // --- Scroll Settings ---
-const float SCROLL_ANGLE = 25.0;         // 20.0 = easier scroll, 35.0 = harder scroll
-const float SCROLL_SPEED = 1.0;          // Multiplier for scroll speed (1.0 = normal)
+const float SCROLL_ANGLE = 25.0;
+const float SCROLL_SPEED = 1.0;
+const bool SMOOTH_SCROLL = true;         // Enable smooth scrolling
+const float SCROLL_SENSITIVITY = 0.5;    // For smooth scroll
+
+// --- Cursor Smoothing ---
+const bool ENABLE_SMOOTHING = true;      // Enable cursor smoothing filter
+const float SMOOTHING_FACTOR = 0.7;      // 0.0-1.0, higher = smoother but more lag
+float smoothedMoveX = 0.0;
+float smoothedMoveY = 0.0;
+
+// --- Advanced Gestures ---
+const bool ENABLE_DOUBLE_CLICK = true;   // Enable double-tap gesture
+const bool ENABLE_MIDDLE_CLICK = true;   // Enable shake gesture for middle click
+const bool ENABLE_DRAG_MODE = false;     // Hold gesture to drag (experimental)
 
 // --- Timing Settings ---
-const unsigned long GESTURE_COOLDOWN = 600;  // 400 = faster repeat, 800 = slower repeat
+const unsigned long GESTURE_COOLDOWN = 600;
 
 // --- Complementary Filter ---
-const float GYRO_WEIGHT = 0.98;          // 0.95 = less drift/more jitter, 0.99 = more drift/less jitter
-const float ACCEL_WEIGHT = 0.02;         // Should equal (1 - GYRO_WEIGHT)
+const float GYRO_WEIGHT = 0.98;
+const float ACCEL_WEIGHT = 0.02;
 
-// ======================================================
+// ========================================
+
+// Smoothing variables
+int lastClickCount = 0;
+bool isDragging = false;
+unsigned long dragStartTime = 0;
+
+// Moving average filter for scroll
+float scrollBuffer[5] = {0};
+int scrollBufferIndex = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -52,13 +77,22 @@ void setup() {
 
   bleMouse.begin();
 
-  Serial.println("ESP32 Air Mouse Starting...");
-  Serial.println("Current Settings:");
-  Serial.print("  Cursor Speed: "); Serial.println(CURSOR_SPEED);
-  Serial.print("  Deadzone: "); Serial.println(DEADZONE);
-  Serial.print("  Tap Threshold: "); Serial.println(TAP_THRESHOLD);
-  Serial.print("  Twist Threshold: "); Serial.println(TWIST_THRESHOLD);
-  Serial.print("  Gesture Cooldown: "); Serial.print(GESTURE_COOLDOWN); Serial.println("ms");
+  Serial.println("╔════════════════════════════════════╗");
+  Serial.println("║   ESP32 Air Mouse - Enhanced      ║");
+  Serial.println("╚════════════════════════════════════╝");
+  Serial.println("\nFeatures Enabled:");
+  Serial.print("  ✓ Cursor Smoothing: "); Serial.println(ENABLE_SMOOTHING ? "ON" : "OFF");
+  Serial.print("  ✓ Smooth Scroll: "); Serial.println(SMOOTH_SCROLL ? "ON" : "OFF");
+  Serial.print("  ✓ Double Click: "); Serial.println(ENABLE_DOUBLE_CLICK ? "ON" : "OFF");
+  Serial.print("  ✓ Middle Click: "); Serial.println(ENABLE_MIDDLE_CLICK ? "ON" : "OFF");
+  Serial.println("\nGestures:");
+  Serial.println("  → Tilt: Move cursor");
+  Serial.println("  → Air Tap: Left Click");
+  Serial.println("  → Double Tap: Double Click");
+  Serial.println("  → Wrist Twist: Right Click");
+  Serial.println("  → Shake: Middle Click");
+  Serial.println("  → Tilt Forward/Back: Scroll");
+  Serial.println("\nWaiting for Bluetooth connection...");
 
   delay(1000);
   lastTime = millis();
@@ -90,11 +124,11 @@ void loop() {
   float gyroRollRate  = gyro.gyro.y * 180 / PI;
   float gyroZRate     = gyro.gyro.z * 180 / PI;
 
-  // Complementary filter with adjustable weights
+  // Complementary filter
   pitch = GYRO_WEIGHT * (pitch + gyroPitchRate * dt) + ACCEL_WEIGHT * accelPitch;
   roll  = GYRO_WEIGHT * (roll  + gyroRollRate  * dt) + ACCEL_WEIGHT * accelRoll;
 
-  // ---- CURSOR MOVEMENT ----
+  // ========== CURSOR MOVEMENT WITH SMOOTHING ==========
   int moveX = 0;
   int moveY = 0;
 
@@ -104,32 +138,101 @@ void loop() {
   if (abs(pitch) > DEADZONE)
     moveY = -pitch * CURSOR_SPEED;
 
-  bleMouse.move(moveX, moveY);
-
-  // ---- LEFT CLICK (Air Tap) ----
-  if (fabs(accel.acceleration.z) > TAP_THRESHOLD &&
-      millis() - lastTapTime > GESTURE_COOLDOWN) {
-
-    bleMouse.click(MOUSE_LEFT);
-    Serial.println("LEFT CLICK");
-    lastTapTime = millis();
+  // Apply exponential smoothing filter
+  if (ENABLE_SMOOTHING) {
+    smoothedMoveX = SMOOTHING_FACTOR * smoothedMoveX + (1 - SMOOTHING_FACTOR) * moveX;
+    smoothedMoveY = SMOOTHING_FACTOR * smoothedMoveY + (1 - SMOOTHING_FACTOR) * moveY;
+    moveX = (int)smoothedMoveX;
+    moveY = (int)smoothedMoveY;
   }
 
-  // ---- RIGHT CLICK (Wrist Twist) ----
+  bleMouse.move(moveX, moveY);
+
+  // ========== LEFT CLICK & DOUBLE CLICK ==========
+  float accelZ = fabs(accel.acceleration.z);
+  
+  if (accelZ > TAP_THRESHOLD && millis() - lastTapTime > GESTURE_COOLDOWN) {
+    
+    // Check for double-click
+    if (ENABLE_DOUBLE_CLICK && 
+        (millis() - lastDoubleClickTime) < DOUBLE_TAP_WINDOW) {
+      
+      // DOUBLE CLICK detected
+      bleMouse.click(MOUSE_LEFT);
+      delay(50);
+      bleMouse.click(MOUSE_LEFT);
+      Serial.println("🖱️ DOUBLE CLICK");
+      
+      lastDoubleClickTime = 0; // Reset to prevent triple
+      lastTapTime = millis();
+      
+    } else {
+      // Single LEFT CLICK
+      bleMouse.click(MOUSE_LEFT);
+      Serial.println("🖱️ LEFT CLICK");
+      
+      lastDoubleClickTime = millis();
+      lastTapTime = millis();
+    }
+  }
+
+  // ========== RIGHT CLICK ==========
   if (fabs(gyroZRate) > TWIST_THRESHOLD &&
       millis() - lastTwistTime > GESTURE_COOLDOWN) {
 
     bleMouse.click(MOUSE_RIGHT);
-    Serial.println("RIGHT CLICK");
+    Serial.println("🖱️ RIGHT CLICK");
     lastTwistTime = millis();
   }
 
-  // ---- SCROLL ----
+  // ========== MIDDLE CLICK (Shake Gesture) ==========
+  if (ENABLE_MIDDLE_CLICK) {
+    float totalAccel = sqrt(accel.acceleration.x * accel.acceleration.x +
+                           accel.acceleration.y * accel.acceleration.y +
+                           accel.acceleration.z * accel.acceleration.z);
+    
+    float shake = fabs(totalAccel - 9.8); // Deviation from gravity
+    
+    if (shake > SHAKE_THRESHOLD && 
+        millis() - lastTapTime > GESTURE_COOLDOWN &&
+        millis() - lastTwistTime > GESTURE_COOLDOWN) {
+      
+      bleMouse.click(MOUSE_MIDDLE);
+      Serial.println("🖱️ MIDDLE CLICK");
+      lastTapTime = millis();
+      lastTwistTime = millis();
+    }
+  }
+
+  // ========== SMOOTH SCROLLING ==========
+  float scrollValue = 0;
+  
   if (pitch > SCROLL_ANGLE) {
-    bleMouse.move(0, 0, -1 * SCROLL_SPEED);   // Scroll down
+    scrollValue = -1 * SCROLL_SPEED;  // Scroll down
   }
   else if (pitch < -SCROLL_ANGLE) {
-    bleMouse.move(0, 0, 1 * SCROLL_SPEED);    // Scroll up
+    scrollValue = 1 * SCROLL_SPEED;   // Scroll up
+  }
+
+  if (SMOOTH_SCROLL && scrollValue != 0) {
+    // Moving average filter for smooth scroll
+    scrollBuffer[scrollBufferIndex] = scrollValue;
+    scrollBufferIndex = (scrollBufferIndex + 1) % 5;
+    
+    float avgScroll = 0;
+    for (int i = 0; i < 5; i++) {
+      avgScroll += scrollBuffer[i];
+    }
+    avgScroll /= 5.0;
+    
+    // Apply scroll with sensitivity
+    if (fabs(avgScroll) > 0.3) {
+      bleMouse.move(0, 0, (int)(avgScroll * SCROLL_SENSITIVITY));
+    }
+    
+  } else if (scrollValue != 0) {
+    // Regular scroll
+    bleMouse.move(0, 0, (int)scrollValue);
   }
 
   delay(10);
